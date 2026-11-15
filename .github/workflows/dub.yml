@@ -35,13 +35,16 @@ jobs:
       - name: جلب ملفات المستودع
         uses: actions/checkout@v4
 
-      - name: تثبيت بايثون و FFmpeg و Cloudflare WARP
+      - name: تثبيت المتطلبات وتشغيل WARP ومولد PO Token
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl gpg lsb-release
-          pip install -U faster-whisper deep-translator edge-tts pydub yt-dlp pytubefix
+          pip install -U faster-whisper deep-translator edge-tts pydub yt-dlp bgutil-ytdlp-pot-provider
 
-          # تثبيت وتشغيل Cloudflare WARP لتجاوز حظر يوتيوب لسيرفرات GitHub
+          # 1. تشغيل مولد GVS PO Token التلقائي لـ yt-dlp على المنفذ 4416
+          docker run -d --name bgutil-pot --network host brainicism/bgutil-ytdlp-pot-provider
+
+          # 2. تثبيت وتشغيل بروكسي Cloudflare WARP
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list
           sudo apt-get update && sudo apt-get install -y cloudflare-warp
@@ -49,38 +52,28 @@ jobs:
           sudo warp-cli --accept-tos mode proxy || sudo warp-cli --accept-tos set-mode proxy
           sudo warp-cli --accept-tos proxy port 40000 || sudo warp-cli --accept-tos set-proxy-port 40000
           sudo warp-cli --accept-tos connect
-          sleep 4
+          sleep 5
 
-      - name: تحميل الفيديو المصدر مع تخطي الحظر
+      - name: تحميل الفيديو المصدر مع GVS PO Token
         run: |
           URL="${{ inputs.video_url }}"
           
-          echo "المحاولة 1: التحميل عبر بروكسي WARP ومشغل Node + Android VR..."
+          echo "المحاولة 1: التحميل عبر WARP مع GVS PO Token التلقائي..."
           yt-dlp --js-runtimes node \
             --proxy "socks5://127.0.0.1:40000" \
-            --extractor-args "youtube:player_client=android_vr,tv,ios,mweb" \
-            -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+            --extractor-args "youtube:player_client=web,mweb,android_vr,ios" \
+            -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
             --merge-output-format mp4 \
             -o "input_video.mp4" "$URL" || true
 
           if [ ! -s "input_video.mp4" ]; then
-            echo "المحاولة 2: التحميل المباشر بمشغل Android VR و Node..."
+            echo "المحاولة 2: التحميل عبر بروتوكول HLS (m3u8) لتفادي خطأ 403..."
             yt-dlp --js-runtimes node \
-              --extractor-args "youtube:player_client=android_vr,tv" \
-              -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+              --proxy "socks5://127.0.0.1:40000" \
+              --extractor-args "youtube:player_client=web_safari,ios,tv" \
+              -f "best[height<=720]/best" \
               --merge-output-format mp4 \
               -o "input_video.mp4" "$URL" || true
-          fi
-
-          if [ ! -s "input_video.mp4" ]; then
-            echo "المحاولة 3: التحميل الاحتياطي عبر مكتبة pytubefix..."
-            python -c "
-          from pytubefix import YouTube
-          import subprocess
-          yt = YouTube('$URL', 'WEB')
-          v = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-          v.download(filename='input_video.mp4')
-          "
           fi
 
           ls -lh input_video.mp4

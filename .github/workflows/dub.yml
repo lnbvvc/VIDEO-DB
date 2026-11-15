@@ -45,22 +45,18 @@ jobs:
 
       - name: تثبيت المتطلبات وتشغيل WARP ومولد PO Token
         run: |
-          # تثبيت المكاتب مع تحديد av<14 لتفادي خطأ faster-whisper
           pip install -U faster-whisper "av<14" deep-translator edge-tts pydub "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider
 
-          # 1. تثبيت FFmpeg و Cloudflare WARP في خطوة واحدة سريعة
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list
-          sudo apt-get update && sudo apt-get install -y ffmpeg cloudflare-warp
+          sudo apt-get update && sudo apt-get install -y ffmpeg cloudflare-warp jq
 
-          # 2. تشغيل WARP أولا على المنفذ 40000
           sudo warp-cli --accept-tos registration new || sudo warp-cli --accept-tos register
           sudo warp-cli --accept-tos mode proxy || sudo warp-cli --accept-tos set-mode proxy
           sudo warp-cli --accept-tos proxy port 40000 || sudo warp-cli --accept-tos set-proxy-port 40000
           sudo warp-cli --accept-tos connect
           sleep 4
 
-          # 3. تشغيل مولد GVS PO Token عبر نفس بروكسي WARP باش يتطابق الـ IP
           docker run -d --name bgutil-pot --network host \
             -e HTTP_PROXY="socks5://127.0.0.1:40000" \
             -e HTTPS_PROXY="socks5://127.0.0.1:40000" \
@@ -71,7 +67,6 @@ jobs:
         run: |
           URL="${{ inputs.video_url }}"
           
-          echo "المحاولة 1: التحميل عبر WARP مع تطابق PO Token و Chrome Impersonation..."
           yt-dlp --js-runtimes node \
             --remote-components ejs:github \
             --impersonate chrome \
@@ -82,7 +77,6 @@ jobs:
             -o "input_video.mp4" "$URL" || true
 
           if [ ! -s "input_video.mp4" ]; then
-            echo "المحاولة 2: تجديد IP ديال WARP والتحميل بصيغة HLS (m3u8)..."
             sudo warp-cli --accept-tos disconnect
             sleep 2
             sudo warp-cli --accept-tos connect
@@ -102,15 +96,45 @@ jobs:
         run: |
           python dubber.py "input_video.mp4" "${{ inputs.dialect_voice }}"
 
-      - name: رفع الفيديو للمشاهدة السحابية المؤقتة
+      - name: حفظ الفيديو للتحميل المباشر من GitHub (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dubbed-video-mp4
+          path: dubbed_video.mp4
+          retention-days: 3
+
+      - name: رفع الفيديو للمشاهدة السحابية المباشرة (مع بدائل تلقائية)
         run: |
-          echo "جاري رفع الفيديو إلى Litterbox..."
-          STREAM_URL=$(curl -s -F "reqtype=fileupload" -F "time=${{ inputs.expire_time }}" -F "fileToUpload=@dubbed_video.mp4" https://litterbox.catbox.moe/resources/internals/api.php)
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
           
-          echo "### 🎬 الفيديو المدبلج واجد للمشاهدة!" >> $GITHUB_STEP_SUMMARY
+          echo "1. محاولة الرفع إلى Litterbox عبر WARP..."
+          STREAM_URL=$(curl -s --proxy "socks5h://127.0.0.1:40000" -A "$UA" \
+            -F "reqtype=fileupload" \
+            -F "time=${{ inputs.expire_time }}" \
+            -F "fileToUpload=@dubbed_video.mp4" \
+            https://litterbox.catbox.moe/resources/internals/api.php)
+
+          if [[ "$STREAM_URL" != https://* ]]; then
+            echo "2. محاولة الرفع البديلة إلى Uguu.se..."
+            STREAM_URL=$(curl -s -A "$UA" -F "files[]=@dubbed_video.mp4" https://uguu.se/upload | jq -r '.files[0].url // empty')
+          fi
+
+          echo "3. رفع نسخة إضافية إلى مشغل Gofile السحابي..."
+          GOFILE_URL=$(curl -s -A "$UA" -F "file=@dubbed_video.mp4" https://upload.gofile.io/uploadfile | jq -r '.data.downloadPage // empty')
+
+          echo "### 🎬 الفيديو المدبلج واجد!" >> $GITHUB_STEP_SUMMARY
           echo "**اللهجة المختارة:** ${{ inputs.dialect_voice }}" >> $GITHUB_STEP_SUMMARY
-          echo "**صلاحية الرابط:** ${{ inputs.expire_time }} (يتحذف تلقائيا بعدها)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "👉 **[إضغط هنا لمشاهدة الفيديو مباشرة في المتصفح بدون تحميل]($STREAM_URL)**" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$STREAM_URL" == https://* ]]; then
+            echo "▶️ **[إضغط هنا لتشغيل الفيديو مباشرة في المتصفح]($STREAM_URL)**" >> $GITHUB_STEP_SUMMARY
+            echo "الرابط المباشر: \`$STREAM_URL\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "$GOFILE_URL" == https://* ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "☁️ **[رابط المشاهدة والتحميل السحابي عبر Gofile]($GOFILE_URL)**" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "الرابط المباشر: \`$STREAM_URL\`" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **للتحميل من GitHub:** ستجد الملف مضغوطا أسفل هذه الصفحة في قسم **Artifacts** باسم \`dubbed-video-mp4\`." >> $GITHUB_STEP_SUMMARY

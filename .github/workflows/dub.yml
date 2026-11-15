@@ -39,9 +39,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl gpg lsb-release
-          pip install -U faster-whisper deep-translator edge-tts pydub yt-dlp bgutil-ytdlp-pot-provider
+          pip install -U faster-whisper deep-translator edge-tts pydub "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider
 
-          # 1. تشغيل مولد GVS PO Token التلقائي لـ yt-dlp على المنفذ 4416
+          # 1. تشغيل مولد GVS PO Token التلقائي على المنفذ 4416
           docker run -d --name bgutil-pot --network host brainicism/bgutil-ytdlp-pot-provider
 
           # 2. تثبيت وتشغيل بروكسي Cloudflare WARP
@@ -54,24 +54,25 @@ jobs:
           sudo warp-cli --accept-tos connect
           sleep 5
 
-      - name: تحميل الفيديو المصدر مع GVS PO Token
+      - name: تحميل الفيديو المصدر مع فك تشفير EJS
         run: |
           URL="${{ inputs.video_url }}"
           
-          echo "المحاولة 1: التحميل عبر WARP مع GVS PO Token التلقائي..."
+          echo "المحاولة 1: التحميل عبر WARP مع GVS PO Token ومكون ejs:github..."
           yt-dlp --js-runtimes node \
+            --remote-components ejs:github \
             --proxy "socks5://127.0.0.1:40000" \
-            --extractor-args "youtube:player_client=web,mweb,android_vr,ios" \
+            --extractor-args "youtube:player_client=web,mweb" \
             -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
             --merge-output-format mp4 \
             -o "input_video.mp4" "$URL" || true
 
           if [ ! -s "input_video.mp4" ]; then
-            echo "المحاولة 2: التحميل عبر بروتوكول HLS (m3u8) لتفادي خطأ 403..."
+            echo "المحاولة 2: التحميل بدون WARP مع GVS PO Token ومكون ejs:github..."
             yt-dlp --js-runtimes node \
-              --proxy "socks5://127.0.0.1:40000" \
-              --extractor-args "youtube:player_client=web_safari,ios,tv" \
-              -f "best[height<=720]/best" \
+              --remote-components ejs:github \
+              --extractor-args "youtube:player_client=web,mweb,tv" \
+              -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" \
               --merge-output-format mp4 \
               -o "input_video.mp4" "$URL" || true
           fi

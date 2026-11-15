@@ -35,17 +35,55 @@ jobs:
       - name: جلب ملفات المستودع
         uses: actions/checkout@v4
 
-      - name: تثبيت بايثون و FFmpeg
+      - name: تثبيت بايثون و FFmpeg و Cloudflare WARP
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
-          pip install faster-whisper deep-translator edge-tts pydub yt-dlp
+          sudo apt-get install -y ffmpeg curl gpg lsb-release
+          pip install -U faster-whisper deep-translator edge-tts pydub yt-dlp pytubefix
 
-      - name: تحميل الفيديو المصدر
+          # تثبيت وتشغيل Cloudflare WARP لتجاوز حظر يوتيوب لسيرفرات GitHub
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-warp.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          sudo warp-cli --accept-tos registration new || sudo warp-cli --accept-tos register
+          sudo warp-cli --accept-tos mode proxy || sudo warp-cli --accept-tos set-mode proxy
+          sudo warp-cli --accept-tos proxy port 40000 || sudo warp-cli --accept-tos set-proxy-port 40000
+          sudo warp-cli --accept-tos connect
+          sleep 4
+
+      - name: تحميل الفيديو المصدر مع تخطي الحظر
         run: |
-          yt-dlp -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+          URL="${{ inputs.video_url }}"
+          
+          echo "المحاولة 1: التحميل عبر بروكسي WARP ومشغل Node + Android VR..."
+          yt-dlp --js-runtimes node \
+            --proxy "socks5://127.0.0.1:40000" \
+            --extractor-args "youtube:player_client=android_vr,tv,ios,mweb" \
+            -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
             --merge-output-format mp4 \
-            -o "input_video.mp4" "${{ inputs.video_url }}"
+            -o "input_video.mp4" "$URL" || true
+
+          if [ ! -s "input_video.mp4" ]; then
+            echo "المحاولة 2: التحميل المباشر بمشغل Android VR و Node..."
+            yt-dlp --js-runtimes node \
+              --extractor-args "youtube:player_client=android_vr,tv" \
+              -f "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
+              --merge-output-format mp4 \
+              -o "input_video.mp4" "$URL" || true
+          fi
+
+          if [ ! -s "input_video.mp4" ]; then
+            echo "المحاولة 3: التحميل الاحتياطي عبر مكتبة pytubefix..."
+            python -c "
+          from pytubefix import YouTube
+          import subprocess
+          yt = YouTube('$URL', 'WEB')
+          v = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+          v.download(filename='input_video.mp4')
+          "
+          fi
+
+          ls -lh input_video.mp4
 
       - name: تشغيل الدبلجة حسب اللهجة المختارة
         run: |

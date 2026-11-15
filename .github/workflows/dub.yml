@@ -35,11 +35,18 @@ jobs:
       - name: جلب ملفات المستودع
         uses: actions/checkout@v4
 
+      - name: استرجاع المكاتب وموديل الذكاء الاصطناعي من الكاش (لتسريع التشغيل)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+          key: dubber-cache-v1
+
       - name: تثبيت المتطلبات وتشغيل WARP ومولد PO Token
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl gpg lsb-release
-          pip install -U faster-whisper deep-translator edge-tts pydub "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider
+          # تثبيت مكاتب بايثون مع تثبيت إصدار av<14 لتفادي خطأ metadata_errors
+          pip install -U faster-whisper "av<14" deep-translator edge-tts pydub "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider
 
           # 1. تشغيل مولد GVS PO Token التلقائي على المنفذ 4416
           docker run -d --name bgutil-pot --network host brainicism/bgutil-ytdlp-pot-provider
@@ -52,7 +59,7 @@ jobs:
           sudo warp-cli --accept-tos mode proxy || sudo warp-cli --accept-tos set-mode proxy
           sudo warp-cli --accept-tos proxy port 40000 || sudo warp-cli --accept-tos set-proxy-port 40000
           sudo warp-cli --accept-tos connect
-          sleep 5
+          sleep 4
 
       - name: تحميل الفيديو المصدر مع فك تشفير EJS
         run: |
